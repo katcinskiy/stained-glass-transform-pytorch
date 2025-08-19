@@ -1,0 +1,17 @@
+# @package _global_
+loss:
+  alpha_mi: 0
+  alpha_abs_cos: 0
+  alpha_norm: 0
+
+training:
+  num_epochs: 1000
+  apply_gradient_clipping: true
+  lr: 5e-5
+
+model:
+  sgt:
+    mu_init_weight: null
+    mu_init_bias: null
+    logvar_init_weight: null
+    logvar_init_bias: null

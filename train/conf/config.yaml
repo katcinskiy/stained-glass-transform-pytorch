@@ -1,0 +1,55 @@
+# config.yaml - Main config with ALL defaults
+defaults:
+  - _self_
+  - experiment: null
+
+# Training hyperparameters
+training:
+  num_epochs: 250
+  train_batch_size: 8
+  eval_batch_size: 8
+  grad_accumulation_steps: 2
+  lr: 3e-4
+  weight_decay: 0.0
+  enable_amp: true
+  demonstration_frequency: 10
+  eval_frequency: 20
+  apply_gradient_clipping: true
+
+# Model configuration
+model:
+  llm_name: "Qwen/Qwen2.5-1.5B-Instruct"
+  sgt:
+    nhead: 8
+    ff: 2
+    layers: 1
+    mu_init_weight: 0
+    mu_init_bias: 0
+    logvar_init_weight: 0
+    logvar_init_bias: -5
+
+# Loss function weights
+loss:
+  alpha_mi: 0.0
+  alpha_abs_cos: 0.0
+  alpha_norm: 0.1
+
+# Data configuration
+data:
+  dataset_name: "ag_news"
+  num_samples: 400
+
+# Neptune tracking
+neptune:
+  project: "katcinskiy/stained-glass-transform"
+  api_token: "eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiJiMjE2ODIxMC0zN2Q0LTRmNDItYjg3Ny0wNTlhODUwOGE0ZDkifQ=="
+
+# Hardware
+device: "cuda:0"
+
+# Hydra configuration
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    name: sgt_training

@@ -1,0 +1,9 @@
+# @package _global_
+loss:
+  alpha_mi: 0.0001
+  alpha_abs_cos: 0.0
+  alpha_norm: 0
+
+training:
+  apply_gradient_clipping: true
+  lr: 5e-5
