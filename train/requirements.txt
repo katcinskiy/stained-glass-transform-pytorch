@@ -1,0 +1,7 @@
+torch
+transformers
+datasets
+accelerate
+hydra-core
+ipykernel
+pytest
