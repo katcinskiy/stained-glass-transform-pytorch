@@ -1,3 +1,5 @@
+import gc
+
 import torch
 import torch.nn as nn
 from torch.amp import autocast, GradScaler
@@ -7,14 +9,15 @@ from datasets import load_dataset
 from tqdm.auto import tqdm
 import datasets
 import neptune
-from loss_new import SGTLoss
+from loss_paper import SGTLossPaper
+from loss_practical import SGTLossPractical
 
 import json
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from metrics import cos_metric, topk_intersection_metric, reconstruction_rank_metric, evaluate_utility, nn_fr_metric
+from metrics import cos_metric, topk_intersection_metric, reconstruction_rank_metric, evaluate_utility, nn_fr_metric, mrp_fr_metric, ttr_k_metric, sym_ttr_k_metric
 
 from collections import defaultdict
 
@@ -43,6 +46,17 @@ def compute_gradient_norm_per_layer(model):
     return grad_norms
 
 
+def compute_l2_per_layer(model): 
+    weight_norms = {}
+    for name, param in model.named_parameters():
+        if 'logvar_head' in name:
+            if param.grad is not None:
+                grad_norm = param.detach().pow(2).sum().sqrt().item()
+                weight_norms[f"weight_norm/{name}"] = grad_norm
+
+    return weight_norms
+
+
 def embed_and_split_batch(llm, batch, device):
     input_ids = batch['input_ids'].to(device)
     attention_mask = batch['attention_mask'].to(device)
@@ -61,10 +75,12 @@ def embed_and_split_batch(llm, batch, device):
         
     B_half = B // 2
     x = embeds[:B_half]
-    x_independent = embeds[B_half:B_half*2]
-    mask = attention_mask[:B_half]
+    x_independent = embeds[B_half: B_half*2]
+    x_mask = attention_mask[:B_half]
 
-    return input_ids[:B_half], x, x_independent, mask
+    x_independent_mask = attention_mask[B_half: B_half*2]
+
+    return input_ids[:B_half], x, x_independent, x_mask, x_independent_mask
 
 
 def compute_separate_metrics(llm, tokenizer, sgt, device, mcq_datasets, utility_baseline):
@@ -79,64 +95,79 @@ def compute_batch_metrics(llm, tokenizer, sgt, input_ids, clean_embeddings, mu, 
     top_1_intersection = topk_intersection_metric(clean_logits, obfuscated_logits, attention_mask, k=1).mean()
     top_5_intersection = topk_intersection_metric(clean_logits, obfuscated_logits, attention_mask, k=5).mean()
 
-    # nn_fr = nn_fr_metric(obfuscated_embeddings, llm.model.embed_tokens, input_ids, attention_mask)
+    nn_fr = nn_fr_metric(obfuscated_embeddings, llm.model.embed_tokens, input_ids, attention_mask)
+
+    reconstruction_rank = reconstruction_rank_metric(obfuscated_embeddings, llm.model.embed_tokens, input_ids, attention_mask)
+
+    mrp_fr = mrp_fr_metric(obfuscated_embeddings, llm.model.embed_tokens, input_ids, attention_mask, r=1)
+
+    ttr_k = ttr_k_metric(obfuscated_embeddings, llm.model.embed_tokens, input_ids, attention_mask, k=10)
+
+    sym_ttr_k = sym_ttr_k_metric(obfuscated_embeddings, llm.model.embed_tokens, input_ids, attention_mask, k=10)
     
     mean_logvar = logvar.mean()
     mean_mu = mu.mean()
-
-    # reconstruction_rank = reconstruction_rank_metric(obfuscated_embeddings, clean_embeddings, input_ids, attention_mask)
 
     return {
         "cos": cos_between_embeds,
         "top_1_intersection": top_1_intersection,
         "top_5_intersection": top_5_intersection,
-        # "nn_fr": nn_fr,
-        # "reconstruction_rank": reconstruction_rank,
+        "nn_fr": nn_fr,
+        "reconstruction_rank": reconstruction_rank,
+        "mrp_fr": mrp_fr,
+        "ttr_k": ttr_k,
+        "sym_ttr_k": sym_ttr_k,
+
         "logvar": mean_logvar,
         "mu": mean_mu
     }
     
 
-def run_epoch(dataloader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad_accumulation_steps, enable_amp, device, mcq_datasets, utility_baseline, do_backprop=True, apply_gradient_clipping=True, log_grad_norms=False):
+def run_epoch(dataloader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad_accumulation_steps, enable_amp, device, mcq_datasets, utility_baseline, 
+              do_backprop=True, apply_gradient_clipping=True, log_grad_norms=False):
 
     losses = defaultdict(list)
     metrics = defaultdict(list)
     gradient_norms = defaultdict(list)
+    l2_norms = defaultdict(list)
 
-    for batch_idx, batch in enumerate(dataloader):
-        x_input_ids, x, x_independent, attention_mask = embed_and_split_batch(llm, batch, device)
+    for batch_idx, batch in enumerate(tqdm(dataloader)):
+        x_input_ids, x, x_independent, attention_mask, independent_attention_mask = embed_and_split_batch(llm, batch, device)
+
+        x_independent.requires_grad_(False)
         
-        with autocast('cuda', dtype=torch.float16, enabled=enable_amp):
-            x_tilde, mu, logvar = sgt.sample(x, attention_mask=attention_mask)
+        x_tilde, mu, logvar = sgt.sample(x, attention_mask=attention_mask)
 
-            with torch.no_grad():
-                mu_independent, logvar_independent = sgt(x_independent, attention_mask=attention_mask)
-            
-            with torch.no_grad():
-                logits_clean = llm(inputs_embeds=x, attention_mask=attention_mask).logits.detach()
+        with torch.no_grad():
+            mu_independent, logvar_independent = sgt(x_independent, attention_mask=independent_attention_mask)
+        
+        with torch.no_grad():
+            logits_clean = llm(inputs_embeds=x, attention_mask=attention_mask).logits.detach()
 
-            logits_obf = llm(inputs_embeds=x_tilde, attention_mask=attention_mask).logits
-            
-            loss_dict = sgt_loss(
-                x=x, 
-                x_tilde=x_tilde, 
-                x_independent=x_independent,
-                mu=mu, 
-                logvar=logvar, 
-                mu_independent=mu_independent,
-                logvar_independent=logvar_independent,
-                logits_clean=logits_clean, 
-                logits_obf=logits_obf,
-                attention_mask=attention_mask
-            )
+        logits_obf = llm(inputs_embeds=x_tilde, attention_mask=attention_mask).logits
+        
+        loss_dict = sgt_loss(
+            x=x, 
+            x_tilde=x_tilde, 
+            x_independent=x_independent,
+            mu=mu, 
+            logvar=logvar, 
+            mu_independent=mu_independent,
+            logvar_independent=logvar_independent,
+            logits_clean=logits_clean, 
+            logits_obf=logits_obf,
+            attention_mask=attention_mask,
+            independent_attention_mask=independent_attention_mask
+        )
 
+        with torch.inference_mode():
             metrics_dict = compute_batch_metrics(llm, tokenizer, sgt, x_input_ids, x, mu, logvar, x_tilde, attention_mask, logits_clean, logits_obf, device, utility_baseline)
 
-            for k, v in loss_dict.items():
-                losses[k].append(v.detach().cpu().item())
+        for k, v in loss_dict.items():
+            losses[k].append(v.detach().cpu().item())
 
-            for k, v in metrics_dict.items():
-                metrics[k].append(v.detach().cpu().item())
+        for k, v in metrics_dict.items():
+            metrics[k].append(v.detach().cpu().item())
         
         if do_backprop:
             loss = loss_dict['total_loss'] / grad_accumulation_steps
@@ -153,6 +184,12 @@ def run_epoch(dataloader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad
                     for name, norm in grad_norms_per_layer.items():
                         gradient_norms[name].append(norm)
 
+
+                    l2_norms_per_layer = compute_l2_per_layer(sgt)
+                    for name, norm in l2_norms_per_layer.items():
+                        l2_norms[name].append(norm)
+                    
+
                 if apply_gradient_clipping:
                     torch.nn.utils.clip_grad_norm_(sgt.parameters(), 1.0)
 
@@ -164,6 +201,7 @@ def run_epoch(dataloader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad
         sep_metrics = compute_separate_metrics(llm, tokenizer, sgt, device, mcq_datasets, utility_baseline)
         for k, v in sep_metrics.items():
             metrics[k] = [v]
+
     for k, v in losses.items():
         losses[k] = sum(losses[k]) / len(losses[k])
 
@@ -174,30 +212,51 @@ def run_epoch(dataloader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad
         if v:
             gradient_norms[k] = sum(v) / len(v)
 
-    return losses, metrics, gradient_norms
+    for k, v in l2_norms.items():
+        if v:
+            l2_norms[k] = sum(v) / len(v)
+
+    return losses, metrics, gradient_norms, l2_norms
 
 
 def demostrate(llm, tokenizer, sgt, neptune_run, epoch, device, prompt='Yo', max_new_tokens=20):
     with torch.inference_mode():
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         
+        # Original generation
         orig_output = llm.generate(inputs["input_ids"], attention_mask=inputs['attention_mask'], max_new_tokens=max_new_tokens, do_sample=False, temperature=None, top_p=None, top_k=None)
         orig_text = tokenizer.decode(orig_output[0], skip_special_tokens=True)
         
+        # Get embeddings and obfuscate them
         original_embeds = llm.get_input_embeddings()(inputs["input_ids"])
         obfuscated_embeds, _, _ = sgt.sample(original_embeds, attention_mask=inputs['attention_mask'])
-        
+
+        # Obfuscated generation
         obf_output = llm.generate(inputs_embeds=obfuscated_embeds, attention_mask=inputs['attention_mask'], max_new_tokens=max_new_tokens, input_ids=inputs["input_ids"], do_sample=False, temperature=None, top_p=None, top_k=None)
         obf_text = tokenizer.decode(obf_output[0], skip_special_tokens=True)
         
+        # Embedding Inversion Attack
+        embedding_matrix = llm.get_input_embeddings().weight
+        inverted_tokens = []
+        for pos in range(obfuscated_embeds.size(1)):
+            similarities = torch.cosine_similarity(obfuscated_embeds[0, pos:pos+1], embedding_matrix, dim=1)
+            inverted_tokens.append(similarities.argmax().item())
+        inverted_text = tokenizer.decode(inverted_tokens, skip_special_tokens=True)
+        
+        # Average cosine similarity between original and obfuscated embeddings
+        avg_cos = torch.cosine_similarity(original_embeds[0], obfuscated_embeds[0], dim=1).mean().item()
+        
         print(f"Original:   {orig_text}")
         print(f"Obfuscated: {obf_text}")
+        print(f"Inverted:   {inverted_text}")
+        print(f"Avg cos similarity (orig vs obf): {avg_cos:.4f}")
 
         neptune_run[f"demo/original_text"].append(orig_text, step=epoch)
         neptune_run[f"demo/obfuscated_text"].append(obf_text, step=epoch)
+        neptune_run[f"demo/inverted_text"].append(inverted_text, step=epoch)
         neptune_run[f"demo/prompt"].append(prompt, step=epoch)
         
-        comparison = f"Prompt: {prompt}\nOriginal: {orig_text}\nObfuscated: {obf_text}"
+        comparison = f"Prompt: {prompt}\nOriginal: {orig_text}\nObfuscated: {obf_text}\nInverted: {inverted_text}"
         neptune_run[f"demo/comparison"].append(comparison, step=epoch)
 
 
@@ -208,7 +267,9 @@ def push_stats(stats, prefix, neptune_run, epoch):
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+
     device = torch.device(cfg.device)
+    best_eval_loss = float('inf')
 
     run = neptune.init_run(
         project=cfg.neptune.project,
@@ -224,18 +285,20 @@ def main(cfg: DictConfig) -> None:
     run["config"] = config_dict
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.llm_name)
-    tokenizer.pad_token = tokenizer.eos_token
+    # tokenizer.pad_token = tokenizer.eos_token
 
     llm = AutoModelForCausalLM.from_pretrained(cfg.model.llm_name, device_map=device)
-    llm._dynamo_compile = False 
+    llm.generation_config.pad_token_id = tokenizer.pad_token_id
+
     for p in llm.parameters():
         p.requires_grad_(False)
 
 
-    dataset = datasets.load_dataset('ag_news')
-    train_texts = [item for item in dataset['train'][:400]['text']]
+    dataset = datasets.load_dataset(cfg.data.dataset_name)
+    
+    train_texts = [item for item in dataset['train'][:cfg.data.num_samples]['text']]
 
-    eval_texts = [item for item in dataset['train'][800:1000]['text']]
+    eval_texts = [item for item in dataset['train'][cfg.data.num_samples:cfg.data.num_samples + 400]['text']]
 
     train_dataset = SGTDataset(train_texts, tokenizer)
     eval_dataset = SGTDataset(eval_texts, tokenizer)
@@ -253,16 +316,40 @@ def main(cfg: DictConfig) -> None:
         logvar_init_bias=cfg.model.sgt.logvar_init_bias,
     ).to(device)
 
-    sgt_loss = SGTLoss(
-        embedding_weights=llm.model.embed_tokens.weight,
 
-        alpha_mi=cfg.loss.alpha_mi,
-        alpha_abs_cos=cfg.loss.alpha_abs_cos,
-        alpha_norm=cfg.loss.alpha_norm
+    if cfg.loss.loss_type == 'paper':
+        sgt_loss = SGTLossPaper(
+            embedding_weights=llm.model.embed_tokens.weight,
+            alpha_mi=cfg.loss.paper.alpha_mi,
+            alpha_abs_cos=cfg.loss.paper.alpha_abs_cos,
+            alpha_norm=cfg.loss.paper.alpha_norm
+        )
+    elif cfg.loss.loss_type == 'practical':
+        sgt_loss = SGTLossPractical(
+            embedding_weights=llm.model.embed_tokens.weight,
+            alpha_utility=cfg.loss.practical.alpha_utility,
+            alpha_obfuscation=cfg.loss.practical.alpha_obfuscation,
+            alpha_abs_cos=cfg.loss.practical.alpha_abs_cos,
+            alpha_log_det_ratio=cfg.loss.practical.alpha_log_det_ratio
+        )
+    else:
+        raise ValueError(f"Invalid loss type {cfg.loss.loss_type}")
+
+
+    decay, no_decay = [], []
+    for n,p in sgt.named_parameters():
+        if any(k in n for k in ['mu_head.', 'logvar_head.']):
+            no_decay.append(p)
+        else:
+            decay.append(p)
+
+    optimizer = torch.optim.AdamW(
+        [{'params': decay, 'weight_decay': cfg.training.weight_decay},
+        {'params': no_decay, 'weight_decay': 0.0}],
+        lr=cfg.training.lr, betas=(0.9, 0.95), eps=1e-5
     )
-
-    # this weight decay can influence the training
-    optimizer = torch.optim.AdamW(sgt.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
+    
+    # optimizer = torch.optim.AdamW(sgt.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
     scaler = GradScaler('cuda')
 
     mcq_datasets = [
@@ -270,7 +357,9 @@ def main(cfg: DictConfig) -> None:
     ]
 
     # initial_utility_obfuscated = evaluate_utility(llm, tokenizer, mcq_datasets, device, sgt=sgt)
-    utility_baseline = evaluate_utility(llm, tokenizer, mcq_datasets, device)
+    # utility_baseline = evaluate_utility(llm, tokenizer, mcq_datasets, device)
+    print("WARNING, HERE utility_baseline IS HARDCODED")
+    utility_baseline = 0.8
 
     print(f"Initial utility of raw LLM: \t {utility_baseline:.5f}")
     # print(f"Initial utility of obfuscated LLM: \t {initial_utility_obfuscated:.5f}")
@@ -280,25 +369,47 @@ def main(cfg: DictConfig) -> None:
 
         sgt.train()
 
-        train_losses, train_metrics, train_grad_norms = run_epoch(train_loader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad_accumulation_steps=cfg.training.grad_accumulation_steps, enable_amp=cfg.training.enable_amp, device=device, mcq_datasets=mcq_datasets, utility_baseline=utility_baseline, do_backprop=True, apply_gradient_clipping=cfg.training.apply_gradient_clipping, log_grad_norms=True)
+        train_losses, train_metrics, train_grad_norms, l2_norms = run_epoch(train_loader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad_accumulation_steps=cfg.training.grad_accumulation_steps, enable_amp=cfg.training.enable_amp, device=device, mcq_datasets=mcq_datasets, utility_baseline=utility_baseline, do_backprop=True, apply_gradient_clipping=cfg.training.apply_gradient_clipping, log_grad_norms=True)
 
         push_stats(train_losses, 'train/loss', run, epoch)
         push_stats(train_metrics, 'train/metric', run, epoch)
-        push_stats(train_grad_norms, 'train/gradients', run, epoch) 
+        push_stats(train_grad_norms, 'train/gradients', run, epoch)
+        push_stats(l2_norms, 'train/l2_norms', run, epoch) 
 
-        if epoch % cfg.training.eval_frequency == 0:
+        if epoch % cfg.training.eval_frequency == 0 and epoch != 0:
             sgt.eval()
             with torch.inference_mode():
-                eval_losses, eval_metrics, _ = run_epoch(eval_loader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad_accumulation_steps=cfg.training.grad_accumulation_steps, enable_amp=cfg.training.enable_amp, device=device, mcq_datasets=mcq_datasets, utility_baseline=utility_baseline, do_backprop=False, apply_gradient_clipping=cfg.training.apply_gradient_clipping, log_grad_norms=False)
+                eval_losses, eval_metrics, _, _ = run_epoch(eval_loader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad_accumulation_steps=cfg.training.grad_accumulation_steps, enable_amp=cfg.training.enable_amp, device=device, mcq_datasets=mcq_datasets, utility_baseline=utility_baseline, do_backprop=False, apply_gradient_clipping=cfg.training.apply_gradient_clipping, log_grad_norms=False)
 
             push_stats(eval_losses, 'eval/loss', run, epoch)
             push_stats(eval_metrics, 'eval/metric', run, epoch)
 
+            if eval_losses['total_loss'] < best_eval_loss:
+                best_eval_loss = eval_losses['total_loss']
+                print(f"Saving new best model with eval loss = {best_eval_loss}")
+                torch.save(sgt.state_dict(), 'checkpoints/best_sgt.pt')
+
+            print(f"Eval: loss = {eval_losses['total_loss']:.4f}, utility = {eval_metrics['utility']}")
 
         print(f"Epoch #{epoch}")
-        print(f"Train: loss = {train_losses['total_loss']:.4f}. \t Eval: loss = {eval_losses['total_loss']:.4f}")
+
+        if cfg.loss.loss_type == 'paper':
+            print(f"Train: total loss = {train_losses['total_loss']:.4f}, ",
+                f"utility loss = {train_losses['utility']:.4f}, ",
+                f"MI = {train_losses['MI']:.4f}, "
+                f"MI/log_det_ratio = {train_losses['log_det_ratio']:.4f}, ",
+                f"MI/mahalanobis = {train_losses['mahalanobis']:.4f}, ",
+                f"abs cos loss = {train_losses['abs_cos']:.4f}.",
+                )
+        elif cfg.loss.loss_type == 'practical':
+            print(f"Train: total loss = {train_losses['total_loss']:.4f}, ",
+                f"utility loss = {train_losses['utility']:.4f}, ",
+                f"log_det_ratio = {train_losses['log_det_ratio']:.4f}, ",
+                f"abs cos loss = {train_losses['abs_cos']:.4f}.",
+                )
+            
         if epoch % cfg.training.demonstration_frequency == 0:
-            demostrate(llm, tokenizer, sgt, run, epoch, device, prompt="This is translation of 'The quick brown fox jumps' to French:", max_new_tokens=20)
+            demostrate(llm, tokenizer, sgt, run, epoch, device, prompt="This is translation of 'The quick brown fox jumps' to Russian:", max_new_tokens=20)
 
 
     run.stop()

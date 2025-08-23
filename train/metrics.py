@@ -22,7 +22,7 @@ def topk_intersection_metric(logits1, logits2, attention_mask, k):
     return intersection_size.sum(-1) / attention_mask.sum(-1) / k
 
 
-def _reconstruction_ranks(obf_embeds, vocab_embeds, input_ids, mask, similarity="euclid"):
+def _reconstruction_ranks(obf_embeds, vocab_embeds, input_ids, mask, similarity="cosine"):
     valid_mask = mask.flatten() == 1
     obf_flat = obf_embeds.view(-1, obf_embeds.size(-1))[valid_mask]
     ids_flat = input_ids.flatten()[valid_mask]
@@ -43,15 +43,15 @@ def _reconstruction_ranks(obf_embeds, vocab_embeds, input_ids, mask, similarity=
     return ranks
 
 
-def reconstruction_rank_metric(obf_embeds, embedding_layer, input_ids, mask, similarity="euclid"):
+def reconstruction_rank_metric(obf_embeds, embedding_layer, input_ids, mask, similarity="cosine"):
     vocab_embeds = embedding_layer.weight
     return (
         (
             _reconstruction_ranks(
-                obf_embeds.cpu(),
-                vocab_embeds.cpu(),
-                input_ids.cpu(),
-                mask.cpu(),
+                obf_embeds,
+                vocab_embeds,
+                input_ids,
+                mask,
                 similarity,
             )
             + 1
@@ -61,65 +61,65 @@ def reconstruction_rank_metric(obf_embeds, embedding_layer, input_ids, mask, sim
     )
 
 
-def nn_fr_metric(obf_embeds, embedding_layer, input_ids, mask, similarity="euclid"):
+def nn_fr_metric(obf_embeds, embedding_layer, input_ids, mask, similarity="cosine"):
     vocab_embeds = embedding_layer.weight
     ranks = _reconstruction_ranks(
-        obf_embeds.cpu(),
-        vocab_embeds.cpu(),
-        input_ids.cpu(),
-        mask.cpu(),
+        obf_embeds,
+        vocab_embeds,
+        input_ids,
+        mask,
         similarity,
     )
 
     fail = ranks != 0
 
-    return 100 * fail.sum() / mask.cpu().sum()
+    return 100 * fail.sum() / mask.sum()
 
 
-def mrp_fr_metric(obf_embeds, embedding_layer, input_ids, mask, r=1, similarity="euclid"):
+def mrp_fr_metric(obf_embeds, embedding_layer, input_ids, mask, r=1, similarity="cosine"):
     vocab_embeds = embedding_layer.weight
     ranks = _reconstruction_ranks(
-        obf_embeds.cpu(),
-        vocab_embeds.cpu(),
-        input_ids.cpu(),
-        mask.cpu(),
+        obf_embeds,
+        vocab_embeds,
+        input_ids,
+        mask,
         similarity,
     )
 
     target_rank = vocab_embeds.size(0) - r
     fail = ranks != target_rank
 
-    return 100 * fail.sum() / mask.cpu().sum()
+    return 100 * fail.sum() / mask.sum()
 
 
-def ttr_k_metric(obf_embeds, embedding_layer, input_ids, mask, k=1, similarity="euclid"):
+def ttr_k_metric(obf_embeds, embedding_layer, input_ids, mask, k=1, similarity="cosine"):
     vocab_embeds = embedding_layer.weight
     ranks = _reconstruction_ranks(
-        obf_embeds.cpu(),
-        vocab_embeds.cpu(),
-        input_ids.cpu(),
-        mask.cpu(),
+        obf_embeds,
+        vocab_embeds,
+        input_ids,
+        mask,
         similarity,
     )
 
-    fail = ranks >= k
+    success_count = ranks >= k
 
-    return 100 * fail.sum() / mask.cpu().sum()
+    return 100 * success_count.sum() / mask.sum()
 
 
-def sym_ttr_k_metric(obf_embeds, embedding_layer, input_ids, mask, k=1, similarity="euclid"):
+def sym_ttr_k_metric(obf_embeds, embedding_layer, input_ids, mask, k=1, similarity="cosine"):
     vocab_embeds = embedding_layer.weight
     ranks = _reconstruction_ranks(
-        obf_embeds.cpu(),
-        vocab_embeds.cpu(),
-        input_ids.cpu(),
-        mask.cpu(),
+        obf_embeds,
+        vocab_embeds,
+        input_ids,
+        mask,
         similarity,
     )
 
-    fail = (ranks >= k) & (ranks < vocab_embeds.size(0) - k)
+    success_count = (ranks >= k) & (ranks < vocab_embeds.size(0) - k)
 
-    return 100 * fail.sum() / mask.cpu().sum()
+    return 100 * success_count.sum() / mask.sum()
 
 
 def evaluate_utility(llm, tokenizer, mcq_datasets, device, sgt=None):

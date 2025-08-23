@@ -215,3 +215,4 @@ train/multirun/*
 train/outputs/*
 train/wandb/*
 .vscode
+.neptune/*

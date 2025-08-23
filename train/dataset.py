@@ -1,7 +1,7 @@
 from torch.utils.data import Dataset
 
 class SGTDataset(Dataset):
-    def __init__(self, texts, tokenizer, max_length=64):
+    def __init__(self, texts, tokenizer, max_length=16):
         self.encodings = tokenizer(texts, truncation=True, padding='max_length', 
                                  max_length=max_length, return_tensors='pt')
     

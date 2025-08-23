@@ -7,7 +7,7 @@ from datasets import load_dataset
 from tqdm.auto import tqdm
 import datasets
 import neptune
-from loss_new import SGTLoss
+from train.loss_paper import SGTLoss
 
 import json
 

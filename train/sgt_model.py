@@ -16,11 +16,11 @@ class SGTModel(nn.Module):
         hidden_embeds = self.enc(x, src_key_padding_mask=~attention_mask.bool())
         mu = self.mu_head(hidden_embeds)
         logvar = self.logvar_head(hidden_embeds)
+        logvar = torch.clamp(logvar, min=-70, max=0)
         return mu, logvar
     
     def sample(self, x, attention_mask):
         mu, logvar = self(x, attention_mask)
-        logvar = torch.clamp(logvar, min=-10, max=2)
         eps = torch.randn_like(mu)
         z = x + mu + eps * torch.exp(0.5 * logvar)
         return z, mu, logvar

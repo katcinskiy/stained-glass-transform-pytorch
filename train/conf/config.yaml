@@ -5,20 +5,20 @@ defaults:
 
 # Training hyperparameters
 training:
-  num_epochs: 250
+  num_epochs: 50
   train_batch_size: 8
   eval_batch_size: 8
   grad_accumulation_steps: 2
   lr: 3e-4
   weight_decay: 0.0
   enable_amp: true
-  demonstration_frequency: 10
-  eval_frequency: 20
+  demonstration_frequency: 1
+  eval_frequency: 1
   apply_gradient_clipping: true
 
 # Model configuration
 model:
-  llm_name: "Qwen/Qwen2.5-1.5B-Instruct"
+  llm_name: "Qwen/Qwen2.5-1.5B"
   sgt:
     nhead: 8
     ff: 2
@@ -30,14 +30,21 @@ model:
 
 # Loss function weights
 loss:
-  alpha_mi: 0.0
-  alpha_abs_cos: 0.0
-  alpha_norm: 0.1
+  loss_type: 'paper'
+  paper:
+    alpha_mi: 0.0
+    alpha_abs_cos: 0.0
+    alpha_norm: 0.1
+  practical:
+    alpha_utility: 1.0
+    alpha_obfuscation: 1.0
+    alpha_log_det_ratio: 0.0
+    alpha_abs_cos: 0.5
 
 # Data configuration
 data:
   dataset_name: "ag_news"
-  num_samples: 400
+  num_samples: 10000
 
 # Neptune tracking
 neptune:
