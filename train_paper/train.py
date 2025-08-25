@@ -4,14 +4,15 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import torch
-from torch.amp import GradScaler
+import torch.nn as nn
+from torch.amp import autocast, GradScaler
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 from tqdm.auto import tqdm
 import datasets
 import neptune
-from loss_practical import SGTLossPractical
+from train_paper.loss_paper import SGTLossPaper
 
 import json
 
@@ -58,22 +59,30 @@ def compute_l2_per_layer(model):
     return weight_norms
 
 
-def embed_batch(llm, batch, device):
+def embed_and_split_batch(llm, batch, device):
     input_ids = batch['input_ids'].to(device)
     attention_mask = batch['attention_mask'].to(device)
-
-    clean_embeds = None
-
-    if 'clean_embeds' in batch:
-        clean_embeds = batch['clean_embeds'].to(device)
     
     with torch.no_grad():
         embeds = llm.get_input_embeddings()(input_ids)
+    
+    B = embeds.size(0)
+    if B % 2 != 0:
+        embeds = embeds[:-1]
+        attention_mask = attention_mask[:-1]
+        B = B - 1
+    
+    if B < 2:
+        raise Exception("Can't proceed")
+        
+    B_half = B // 2
+    x = embeds[:B_half]
+    x_independent = embeds[B_half: B_half*2]
+    x_mask = attention_mask[:B_half]
 
-    x = embeds
-    x_mask = attention_mask
+    x_independent_mask = attention_mask[B_half: B_half*2]
 
-    return input_ids, x, x_mask, clean_embeds
+    return input_ids[:B_half], x, x_independent, x_mask, x_independent_mask
 
 
 def compute_separate_metrics(llm, tokenizer, sgt, device, mcq_datasets, utility_baseline):
@@ -110,6 +119,7 @@ def compute_batch_metrics(llm, tokenizer, sgt, input_ids, clean_embeddings, mu, 
         "mrp_fr": mrp_fr,
         "ttr_k": ttr_k,
         "sym_ttr_k": sym_ttr_k,
+
         "logvar": mean_logvar,
         "mu": mean_mu
     }
@@ -124,24 +134,32 @@ def run_epoch(dataloader, llm, tokenizer, sgt, sgt_loss, optimizer, scaler, grad
     l2_norms = defaultdict(list)
 
     for batch_idx, batch in enumerate(tqdm(dataloader)):
-        x_input_ids, x, attention_mask, logits_clean = embed_batch(llm, batch, device)
+        x_input_ids, x, x_independent, attention_mask, independent_attention_mask = embed_and_split_batch(llm, batch, device)
+
+        x_independent.requires_grad_(False)
         
         x_tilde, mu, logvar = sgt.sample(x, attention_mask=attention_mask)
+
+        with torch.no_grad():
+            mu_independent, logvar_independent = sgt(x_independent, attention_mask=independent_attention_mask)
         
-        if logits_clean is None:
-            with torch.no_grad():
-                logits_clean = llm(inputs_embeds=x, attention_mask=attention_mask).logits.detach()
+        with torch.no_grad():
+            logits_clean = llm(inputs_embeds=x, attention_mask=attention_mask).logits.detach()
 
         logits_obf = llm(inputs_embeds=x_tilde, attention_mask=attention_mask).logits
         
         loss_dict = sgt_loss(
             x=x, 
             x_tilde=x_tilde, 
+            x_independent=x_independent,
             mu=mu, 
             logvar=logvar, 
+            mu_independent=mu_independent,
+            logvar_independent=logvar_independent,
             logits_clean=logits_clean, 
             logits_obf=logits_obf,
             attention_mask=attention_mask,
+            independent_attention_mask=independent_attention_mask
         )
 
         with torch.inference_mode():
@@ -247,10 +265,6 @@ def push_stats(stats, prefix, neptune_run, epoch):
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
 
-    os.makedirs('./checkpoints', exist_ok=True)
-
-    should_cache_clean_logits = cfg.model.cache_clean_logits
-
     device = torch.device(cfg.device)
     best_eval_loss = float('inf')
 
@@ -276,18 +290,15 @@ def main(cfg: DictConfig) -> None:
     for p in llm.parameters():
         p.requires_grad_(False)
 
+
     dataset = datasets.load_dataset(cfg.data.dataset_name)
     
     train_texts = [item for item in dataset['train'][:cfg.data.num_samples]['text']]
 
     eval_texts = [item for item in dataset['train'][cfg.data.num_samples:cfg.data.num_samples + 400]['text']]
 
-    llm_for_embeds_clean_precompute = None
-    if should_cache_clean_logits:
-        llm_for_embeds_clean_precompute = llm
-
-    train_dataset = SGTDataset(train_texts, tokenizer, llm_for_embeds_clean_precompute=llm_for_embeds_clean_precompute, max_length=cfg.model.tokenizer_max_length)
-    eval_dataset = SGTDataset(eval_texts, tokenizer, llm_for_embeds_clean_precompute=llm_for_embeds_clean_precompute, max_length=cfg.model.tokenizer_max_length)
+    train_dataset = SGTDataset(train_texts, tokenizer)
+    eval_dataset = SGTDataset(eval_texts, tokenizer)
     train_loader = DataLoader(train_dataset, batch_size=cfg.training.train_batch_size, shuffle=True, drop_last=True)
     eval_loader = DataLoader(eval_dataset, batch_size=cfg.training.eval_batch_size, shuffle=True, drop_last=True)
 
@@ -303,12 +314,11 @@ def main(cfg: DictConfig) -> None:
     ).to(device)
 
 
-    sgt_loss = SGTLossPractical(
+    sgt_loss = SGTLossPaper(
         embedding_weights=llm.model.embed_tokens.weight,
-        alpha_utility=cfg.loss.alpha_utility,
-        alpha_obfuscation=cfg.loss.alpha_obfuscation,
-        alpha_abs_cos=cfg.loss.alpha_abs_cos,
-        alpha_logvar_mse=cfg.loss.alpha_logvar_mse
+        alpha_mi=cfg.loss.paper.alpha_mi,
+        alpha_abs_cos=cfg.loss.paper.alpha_abs_cos,
+        alpha_norm=cfg.loss.paper.alpha_norm
     )
 
     decay, no_decay = [], []
@@ -324,17 +334,20 @@ def main(cfg: DictConfig) -> None:
         lr=cfg.training.lr, betas=(0.9, 0.95), eps=1e-5
     )
     
+    # optimizer = torch.optim.AdamW(sgt.parameters(), lr=cfg.training.lr, weight_decay=cfg.training.weight_decay)
     scaler = GradScaler('cuda')
 
     mcq_datasets = [
         load_dataset("ai2_arc", "ARC-Challenge")['train'].select(range(100))
     ]
 
-    initial_utility_obfuscated = evaluate_utility(llm, tokenizer, mcq_datasets, device, sgt=sgt)
-    utility_baseline = evaluate_utility(llm, tokenizer, mcq_datasets, device)
+    # initial_utility_obfuscated = evaluate_utility(llm, tokenizer, mcq_datasets, device, sgt=sgt)
+    # utility_baseline = evaluate_utility(llm, tokenizer, mcq_datasets, device)
+    print("WARNING, HERE utility_baseline IS HARDCODED")
+    utility_baseline = 0.8
 
-    print(f"Initial utility of obfuscated LLM: \t {initial_utility_obfuscated:.5f}")
-    print(f"Initial utility of normal LLM: \t {utility_baseline:.5f}")
+    print(f"Initial utility of raw LLM: \t {utility_baseline:.5f}")
+    # print(f"Initial utility of obfuscated LLM: \t {initial_utility_obfuscated:.5f}")
 
     for epoch in tqdm(range(cfg.training.num_epochs)):
         epoch_loss = 0
@@ -365,11 +378,20 @@ def main(cfg: DictConfig) -> None:
 
         print(f"Epoch #{epoch}")
 
-        print(f"Train: total loss = {train_losses['total_loss']:.4f}, ",
-            f"utility loss = {train_losses['utility']:.4f}, ",
-            f"logvar_mse = {train_losses['logvar_mse']:.4f}, ",
-            f"abs cos loss = {train_losses['abs_cos']:.4f}.",
-            )
+        if cfg.loss.loss_type == 'paper':
+            print(f"Train: total loss = {train_losses['total_loss']:.4f}, ",
+                f"utility loss = {train_losses['utility']:.4f}, ",
+                f"MI = {train_losses['MI']:.4f}, "
+                f"MI/log_det_ratio = {train_losses['log_det_ratio']:.4f}, ",
+                f"MI/mahalanobis = {train_losses['mahalanobis']:.4f}, ",
+                f"abs cos loss = {train_losses['abs_cos']:.4f}.",
+                )
+        elif cfg.loss.loss_type == 'practical':
+            print(f"Train: total loss = {train_losses['total_loss']:.4f}, ",
+                f"utility loss = {train_losses['utility']:.4f}, ",
+                f"log_det_ratio = {train_losses['log_det_ratio']:.4f}, ",
+                f"abs cos loss = {train_losses['abs_cos']:.4f}.",
+                )
             
         if epoch % cfg.training.demonstration_frequency == 0:
             demostrate(llm, tokenizer, sgt, run, epoch, device, prompt="This is translation of 'The quick brown fox jumps' to Russian:", max_new_tokens=20)

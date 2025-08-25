@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -10,7 +9,7 @@ class SGTLossPractical(nn.Module):
             alpha_utility,
             alpha_obfuscation,
             alpha_abs_cos,
-            alpha_log_det_ratio
+            alpha_logvar_mse
 
         ):
         super().__init__()
@@ -19,21 +18,21 @@ class SGTLossPractical(nn.Module):
         self.alpha_utility = alpha_utility
         self.alpha_obfuscation = alpha_obfuscation
         self.alpha_abs_cos = alpha_abs_cos
-        self.alpha_log_det_ratio = alpha_log_det_ratio
+        self.alpha_logvar_mse = alpha_logvar_mse
     
-    def forward(self, x, x_tilde, x_independent, mu, logvar, mu_independent, logvar_independent, 
-                logits_clean, logits_obf, attention_mask, independent_attention_mask):
+    def forward(self, x, x_tilde, mu, logvar, 
+                logits_clean, logits_obf, attention_mask):
         
         utility_loss = self._utility_loss_kl(logits_clean, logits_obf, attention_mask)
-        log_det_ratio_loss = self._log_det_ratio_loss(logvar, logvar_independent, attention_mask & independent_attention_mask)
+        logvar_mse = self._logvar_mse(logvar, attention_mask)
         abs_cos_loss = self._abs_cos_loss(x, x_tilde)
         # norm_loss = self._median_norm_penalty(x, mu)
 
-        scaled_log_det_ratio_loss = self.alpha_log_det_ratio * log_det_ratio_loss
+        scaled_logvar_mse = self.alpha_logvar_mse * logvar_mse
         
         scaled_abs_cos_loss = self.alpha_abs_cos * abs_cos_loss
 
-        obfuscations_loss = scaled_log_det_ratio_loss + scaled_abs_cos_loss
+        obfuscations_loss = scaled_logvar_mse + scaled_abs_cos_loss
 
         total_loss = self.alpha_utility * utility_loss + self.alpha_obfuscation * obfuscations_loss
         
@@ -43,7 +42,7 @@ class SGTLossPractical(nn.Module):
             'obfuscations': obfuscations_loss,
             'utility': utility_loss,
 
-            'log_det_ratio': scaled_log_det_ratio_loss,
+            'logvar_mse': scaled_logvar_mse,
             'abs_cos': scaled_abs_cos_loss,
 
             'raw/abs_cos': abs_cos_loss
@@ -65,16 +64,12 @@ class SGTLossPractical(nn.Module):
 
         return ce_loss
 
-    def _log_det_ratio_loss(self, logvar, logvar_independent, attention_mask):
-        # mask = attention_mask.unsqueeze(-1).float()
-        # denom = mask.sum(dim=(-1, -2)).clamp_min(1.0)
-        # log_det_ratio = ((logvar_independent.detach() - logvar) * mask).sum(dim=(-1, -2))
-        # return log_det_ratio.mean()
-    
+    def _logvar_mse(self, logvar, attention_mask):
         mask = attention_mask.unsqueeze(-1).float()
-        denom = mask.sum(dim=(-1, -2)).clamp_min(1.0)
-        log_det_ratio = ((logvar ** 2) * mask)
-        return log_det_ratio.mean()
+        mask_d = mask.expand_as(logvar)
+        num = (logvar.pow(2) * mask_d).sum()
+        den = mask_d.sum().clamp_min(1.0)
+        return num / den
 
 
     def _median_norm_penalty(self, x, mu):

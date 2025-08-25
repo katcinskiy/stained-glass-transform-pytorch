@@ -6,21 +6,17 @@ class SGTLossPaper(nn.Module):
     def __init__(
             self, 
             embedding_weights,
-
             alpha_mi=0.0,
             alpha_abs_cos=0.0,
             alpha_norm=0.0,
-
         ):
         super().__init__()
         self.embeddings_norm = embedding_weights.norm(dim=-1).detach().median()
 
-        
         self.alpha_mi = alpha_mi
         self.alpha_abs_cos = alpha_abs_cos
         self.alpha_norm = alpha_norm
 
-        self.updated_to_future_alphas = False
 
     def set_alpha(self, alpha_name, value):
         setattr(self, alpha_name, value)
@@ -69,7 +65,7 @@ class SGTLossPaper(nn.Module):
         return cos_sim.abs().mean()
     
     def _utility_loss_kl(self, logits_clean, logits_obf, attn_mask):
-        # logits_clean should be detached/no_grad when passed in
+        # logits_clean should be detached/no_grad when passed
         log_probs_clean = F.log_softmax(logits_clean, dim=-1)
         log_probs_obf = F.log_softmax(logits_obf, dim=-1)
         

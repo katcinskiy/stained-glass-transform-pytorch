@@ -3,5 +3,4 @@ transformers
 datasets
 accelerate
 hydra-core
-ipykernel
-pytest
+neptune

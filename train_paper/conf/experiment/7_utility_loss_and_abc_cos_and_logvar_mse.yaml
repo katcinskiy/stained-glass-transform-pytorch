@@ -4,7 +4,7 @@ loss:
   practical:
     alpha_utility: 1.0
     alpha_obfuscation: 1.0
-    alpha_log_det_ratio: 0.01
+    alpha_logvar_mse: 0.01
     alpha_abs_cos: 0.5
 
 training:
