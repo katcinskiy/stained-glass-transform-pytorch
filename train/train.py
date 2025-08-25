@@ -308,7 +308,8 @@ def main(cfg: DictConfig) -> None:
         alpha_utility=cfg.loss.alpha_utility,
         alpha_obfuscation=cfg.loss.alpha_obfuscation,
         alpha_abs_cos=cfg.loss.alpha_abs_cos,
-        alpha_logvar_mse=cfg.loss.alpha_logvar_mse
+        alpha_logvar_mse=cfg.loss.alpha_logvar_mse,
+        alpha_norm=cfg.loss.alpha_norm,
     )
 
     decay, no_decay = [], []

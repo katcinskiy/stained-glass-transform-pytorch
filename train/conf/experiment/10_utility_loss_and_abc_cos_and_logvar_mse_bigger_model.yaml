@@ -4,8 +4,13 @@ loss:
   alpha_obfuscation: 1.0
   alpha_logvar_mse: 1.0
   alpha_abs_cos: 0.5
+  alpha_norm: 0.1
 
 training:
+  num_epochs: 50
+  train_batch_size: 16
+  eval_batch_size: 32
+  grad_accumulation_steps: 1
   apply_gradient_clipping: true
   lr: 5e-5
 
@@ -19,7 +24,7 @@ model:
     mu_init_weight: 0
     mu_init_bias: 0
     logvar_init_weight: 0
-    logvar_init_bias: -5
+    logvar_init_bias: -4
 
 data:
   dataset_name: "ag_news"

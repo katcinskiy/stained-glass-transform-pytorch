@@ -35,6 +35,7 @@ loss:
   alpha_obfuscation: 1.0
   alpha_logvar_mse: 0.0
   alpha_abs_cos: 0.5
+  alpha_norm: 0.1
 
 data:
   dataset_name: "ag_news"

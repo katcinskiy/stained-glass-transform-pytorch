@@ -4,8 +4,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import torch
-import torch.nn as nn
-from torch.amp import autocast, GradScaler
+from torch.amp import GradScaler
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset

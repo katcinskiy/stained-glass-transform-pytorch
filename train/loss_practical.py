@@ -9,7 +9,8 @@ class SGTLossPractical(nn.Module):
             alpha_utility,
             alpha_obfuscation,
             alpha_abs_cos,
-            alpha_logvar_mse
+            alpha_logvar_mse,
+            alpha_norm,
 
         ):
         super().__init__()
@@ -19,6 +20,7 @@ class SGTLossPractical(nn.Module):
         self.alpha_obfuscation = alpha_obfuscation
         self.alpha_abs_cos = alpha_abs_cos
         self.alpha_logvar_mse = alpha_logvar_mse
+        self.alpha_norm = alpha_norm
     
     def forward(self, x, x_tilde, mu, logvar, 
                 logits_clean, logits_obf, attention_mask):
@@ -26,13 +28,13 @@ class SGTLossPractical(nn.Module):
         utility_loss = self._utility_loss_kl(logits_clean, logits_obf, attention_mask)
         logvar_mse = self._logvar_mse(logvar, attention_mask)
         abs_cos_loss = self._abs_cos_loss(x, x_tilde)
-        # norm_loss = self._median_norm_penalty(x, mu)
+        norm_loss = self._median_norm_penalty(x, mu)
 
         scaled_logvar_mse = self.alpha_logvar_mse * logvar_mse
-        
         scaled_abs_cos_loss = self.alpha_abs_cos * abs_cos_loss
+        scaled_norm_loss = self.alpha_norm * norm_loss
 
-        obfuscations_loss = scaled_logvar_mse + scaled_abs_cos_loss
+        obfuscations_loss = scaled_logvar_mse + scaled_abs_cos_loss + scaled_norm_loss
 
         total_loss = self.alpha_utility * utility_loss + self.alpha_obfuscation * obfuscations_loss
         
@@ -53,7 +55,6 @@ class SGTLossPractical(nn.Module):
         return cos_sim.abs().mean()
     
     def _utility_loss_kl(self, logits_clean, logits_obf, attn_mask):
-        # logits_clean should be detached/no_grad when passed in
         log_probs_clean = F.log_softmax(logits_clean, dim=-1)
         log_probs_obf = F.log_softmax(logits_obf, dim=-1)
         
