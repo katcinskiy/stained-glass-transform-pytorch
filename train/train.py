@@ -247,7 +247,9 @@ def push_stats(stats, prefix, neptune_run, epoch):
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
 
-    os.makedirs('./checkpoints', exist_ok=True)
+    checkpoint_path = f'./checkpoints/{cfg.name.replace(".", "_")}'
+
+    os.makedirs(checkpoint_path, exist_ok=True)
 
     should_cache_clean_logits = cfg.model.cache_clean_logits
 
@@ -360,7 +362,7 @@ def main(cfg: DictConfig) -> None:
             if eval_losses['total_loss'] < best_eval_loss:
                 best_eval_loss = eval_losses['total_loss']
                 print(f"Saving new best model with eval loss = {best_eval_loss}")
-                torch.save(sgt.state_dict(), 'checkpoints/best_sgt.pt')
+                torch.save(sgt.state_dict(), f'{checkpoint_path}/best_sgt.pt')
 
             print(f"Eval: loss = {eval_losses['total_loss']:.4f}, utility = {eval_metrics['utility']}")
 
