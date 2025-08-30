@@ -31,3 +31,18 @@ For more details, see my [training notes](training_notes.md), where I explain wh
 The authors are also behind [**Protopia.ai**](https://protopia.ai), which provides documentation and recommendations for training with Stained Glass Transform:
 
 [Protopia.ai Training Recommendations for LLMs](https://docs.protopia.ai/engine/1.2.1/recommendations_for_training_llms)  
+
+
+---
+
+## Weights
+
+Pretrained weights for two configs from `./train/config` are available on [Google Drive](https://drive.google.com/drive/folders/1tiqTURdRTvETI2ihS85AUCTPM2LDvl5c?usp=share_link).
+
+
+--- 
+
+## Experimenting Against Model Inversion Attack (MIA)
+
+I conducted experiments to evaluate the model against MIA, since the authors did not include this analysis in their paper, despite MIA being one of the most powerful known attacks.  
+A demonstration notebook is available at `./MIA/model_inversion_attack.ipynb`.
