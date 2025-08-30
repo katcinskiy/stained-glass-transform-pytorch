@@ -1,0 +1,34 @@
+# @package _global_
+name: 1_utility_loss_and_abc_cos_and_logvar_mse_0
+
+loss:
+  alpha_utility: 1.0
+  alpha_obfuscation: 1.0
+  alpha_logvar_mse: 0.0
+  alpha_abs_cos: 0.5
+  alpha_norm: 0.1
+
+training:
+  num_epochs: 20
+  train_batch_size: 8
+  eval_batch_size: 16
+  grad_accumulation_steps: 1
+  apply_gradient_clipping: true
+  lr: 5e-5
+
+model:
+  llm_name: "Qwen/Qwen2.5-1.5B"
+  tokenizer_max_length: 16
+  cache_clean_logits: False
+  sgt:
+    nhead: 8
+    ff: 2
+    layers: 1
+    mu_init_weight: 0
+    mu_init_bias: 0
+    logvar_init_weight: 0
+    logvar_init_bias: -5
+
+data:
+  dataset_name: "ag_news"
+  num_samples: 50000

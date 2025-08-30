@@ -1,0 +1,3 @@
+python3 train/train.py experiment=1_utility_loss_and_abc_cos_and_logvar_mse_1.0;
+python3 train/train.py experiment=2_utility_loss_and_abc_cos_and_logvar_mse_0.1;
+python3 train/train.py experiment=3_utility_loss_and_abc_cos_and_logvar_mse_0.01;

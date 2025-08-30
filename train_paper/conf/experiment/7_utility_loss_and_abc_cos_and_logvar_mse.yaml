@@ -1,0 +1,21 @@
+# @package _global_
+loss:
+  loss_type: 'practical'
+  practical:
+    alpha_utility: 1.0
+    alpha_obfuscation: 1.0
+    alpha_logvar_mse: 0.01
+    alpha_abs_cos: 0.5
+
+training:
+  apply_gradient_clipping: true
+  lr: 5e-5
+
+model:
+  sgt:
+    logvar_init_bias: -5
+
+
+data:
+  dataset_name: "ag_news"
+  num_samples: 1000

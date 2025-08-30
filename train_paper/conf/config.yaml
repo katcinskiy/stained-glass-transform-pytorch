@@ -1,0 +1,42 @@
+# config.yaml - Main config with ALL defaults
+defaults:
+  - _self_
+  - experiment: null
+
+training:
+  num_epochs: 50
+  train_batch_size: 8
+  eval_batch_size: 8
+  grad_accumulation_steps: 2
+  lr: 3e-4
+  weight_decay: 0.0
+  enable_amp: true
+  demonstration_frequency: 1
+  eval_frequency: 1
+  apply_gradient_clipping: true
+
+model:
+  llm_name: "Qwen/Qwen2.5-1.5B"
+  sgt:
+    nhead: 8
+    ff: 2
+    layers: 1
+    mu_init_weight: 0
+    mu_init_bias: 0
+    logvar_init_weight: 0
+    logvar_init_bias: -5
+
+loss:
+  alpha_mi: 0.0
+  alpha_abs_cos: 0.0
+  alpha_norm: 0.1
+
+data:
+  dataset_name: "ag_news"
+  num_samples: 10000
+
+neptune:
+  project: "<YOUR_PROJECT_HERE>"
+  api_token: "<YOUR_TOKEN_HERE>"
+
+device: "cuda:0"
