@@ -42,7 +42,7 @@ data:
   num_samples: 10000
 
 neptune:
-  project: "katcinskiy/stained-glass-transform"
-  api_token: "eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiJiMjE2ODIxMC0zN2Q0LTRmNDItYjg3Ny0wNTlhODUwOGE0ZDkifQ=="
+  project: "<YOUR_PROJECT_HERE>"
+  api_token: "<YOUR_TOKEN_HERE>"
 
 device: "cuda:0"
